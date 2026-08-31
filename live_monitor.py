@@ -13,6 +13,8 @@ from datetime import datetime
 
 from web_dashboard import start_web_dashboard
 
+import csv
+
 # ANSI Color Codes
 C_RESET = "\033[0m"
 C_BOLD = "\033[1m"
@@ -70,6 +72,106 @@ def load_talkgroup_aliases(json_path="talkgroups.json"):
             pass
     return aliases
 
+def load_discovered_frequencies(csv_path="frecuencias.csv", txt_path="nuevas_frecuencias.txt"):
+    freqs = {}
+    if os.path.exists(csv_path):
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    hz = int(row["frecuencia_hz"])
+                    freqs[hz] = {
+                        "grupo_sdr": row.get("grupo_sdr", "G1"),
+                        "frecuencia_hz": hz,
+                        "frecuencia_mhz": float(row["frecuencia_mhz"]),
+                        "canal_id": int(row["canal_id"]),
+                        "celda_scr": row.get("celda_scr", "70"),
+                        "veces_visto": int(row.get("veces_visto", 1)),
+                        "primera_deteccion": row.get("primera_deteccion", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                        "ultima_deteccion": row.get("ultima_deteccion", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                        "etiqueta": row.get("etiqueta", "")
+                    }
+            return freqs
+        except Exception:
+            pass
+
+    if os.path.exists(txt_path):
+        try:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    m = re.search(r"Frecuencia:\s+([\d\.]+)\s+MHz\s+\((\d+)\s+Hz\)\s+\|\s+Canal ID:\s+(\d+).*?(?:Celda SCR:\s*(\d+))?", line)
+                    if not m:
+                        m = re.search(r"•\s+([\d\.]+)\s+MHz\s+\((\d+)\s+Hz\)\s+\|\s+Canal ID:\s+(\d+).*?(?:Celda SCR:\s*(\d+))?", line)
+                    if m:
+                        mhz = float(m.group(1))
+                        hz = int(m.group(2))
+                        cid = int(m.group(3))
+                        scr = m.group(4) if m.group(4) else "70"
+                        if hz not in freqs:
+                            freqs[hz] = {
+                                "grupo_sdr": "G1",
+                                "frecuencia_hz": hz,
+                                "frecuencia_mhz": mhz,
+                                "canal_id": cid,
+                                "celda_scr": scr,
+                                "veces_visto": 1,
+                                "primera_deteccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "ultima_deteccion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "etiqueta": ""
+                            }
+                        else:
+                            freqs[hz]["veces_visto"] += 1
+        except Exception:
+            pass
+    return freqs
+
+def cluster_frequencies(freqs_dict, max_span=1800000):
+    sorted_f = sorted(freqs_dict.keys())
+    if not sorted_f:
+        return []
+    clusters = []
+    curr = [sorted_f[0]]
+    for f in sorted_f[1:]:
+        if f - curr[0] <= max_span:
+            curr.append(f)
+        else:
+            clusters.append(curr)
+            curr = [f]
+    if curr:
+        clusters.append(curr)
+    return clusters
+
+def save_clustered_frequencies(freqs_dict, filepath="frecuencias.csv"):
+    sorted_f = sorted(freqs_dict.keys())
+    clusters = cluster_frequencies(freqs_dict, max_span=1800000)
+    for idx, cl in enumerate(clusters):
+        for f in cl:
+            freqs_dict[f]["grupo_sdr"] = f"G{idx+1}"
+
+    fieldnames = [
+        "grupo_sdr", "frecuencia_hz", "frecuencia_mhz", "canal_id",
+        "celda_scr", "veces_visto", "primera_deteccion", "ultima_deteccion", "etiqueta"
+    ]
+    try:
+        with open(filepath, "w", newline="", encoding="utf-8") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for f in sorted_f:
+                d = freqs_dict[f]
+                writer.writerow({
+                    "grupo_sdr": d.get("grupo_sdr", "G1"),
+                    "frecuencia_hz": f,
+                    "frecuencia_mhz": d.get("frecuencia_mhz", round(f / 1e6, 4)),
+                    "canal_id": d.get("canal_id", 0),
+                    "celda_scr": d.get("celda_scr", "70"),
+                    "veces_visto": d.get("veces_visto", 1),
+                    "primera_deteccion": d.get("primera_deteccion", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    "ultima_deteccion": d.get("ultima_deteccion", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                    "etiqueta": d.get("etiqueta", "")
+                })
+    except Exception:
+        pass
+
 def parse_gps_payload(hex_str):
     if not hex_str or len(hex_str) < 12:
         return None
@@ -95,7 +197,7 @@ def parse_gps_payload(hex_str):
     except Exception:
         pass
 
-    # 2. LIP Binario
+    # 2. LIP Binario (Validar cabecera y coherencia geográfica en España / Europa)
     for offset in range(0, max(1, len(raw) - 6), 2):
         chunk = raw[offset:offset+6]
         if len(chunk) == 6:
@@ -103,26 +205,56 @@ def parse_gps_payload(hex_str):
             lon_raw = int.from_bytes(chunk[3:6], byteorder="big", signed=True)
             lat = lat_raw * (90.0 / (1 << 23))
             lon = lon_raw * (180.0 / (1 << 23))
-            if (-89.0 <= lat <= 89.0) and (-179.0 <= lon <= 179.0) and not (abs(lat) < 0.001 and abs(lon) < 0.001):
-                if abs(lat) > 5.0:
-                    return lat, lon, "LIP Binario"
+            # Filtro estricto: Bounding box de España / Europa / Cantabria (27° a 46° N, -19° a 5° E/W)
+            if (27.0 <= lat <= 46.0) and (-19.0 <= lon <= 5.0):
+                return lat, lon, "LIP Binario (Verificado)"
 
     return None
 
 def extract_tetrapol_channels(hex_str):
+    if not hex_str or len(hex_str) < 6:
+        return []
     try:
         raw = bytes.fromhex(hex_str)
     except Exception:
         return []
+
     channels = []
-    if len(raw) >= 3:
-        for i in range(len(raw) - 1):
-            val1 = ((raw[i] & 0x0F) << 8) | raw[i+1]
-            val2 = (raw[i] << 4) | (raw[i+1] >> 4)
-            for v in (val1, val2):
-                if 800 <= v <= 1600:
-                    f = 380000000 + v * 12500
-                    channels.append((v, f))
+    opcode = raw[0]
+
+    # 1. D_NEIGHBOURING_CELL (0x94) - Lista de celdas vecinas
+    if opcode == 0x94 and len(raw) >= 5:
+        num_cells = raw[1] & 0x0F
+        offset = 3
+        for _ in range(num_cells):
+            if offset + 2 < len(raw):
+                ch_id = ((raw[offset] & 0x0F) << 8) | raw[offset + 1]
+                if 800 <= ch_id <= 1600:
+                    f = 380000000 + ch_id * 12500
+                    channels.append((ch_id, f))
+                offset += 3
+
+    # 2. D_CALL_SETUP (0x30) - Asignación de canal para llamada
+    elif opcode == 0x30 and len(raw) >= 6:
+        ch_id = ((raw[4] & 0x0F) << 8) | raw[5]
+        if 800 <= ch_id <= 1600:
+            f = 380000000 + ch_id * 12500
+            channels.append((ch_id, f))
+
+    # 3. D_CONNECT_DCH (0x60) - Canal dedicado de datos
+    elif opcode == 0x60 and len(raw) >= 9:
+        ch_id = ((raw[7] & 0x0F) << 8) | raw[8]
+        if 800 <= ch_id <= 1600:
+            f = 380000000 + ch_id * 12500
+            channels.append((ch_id, f))
+
+    # 4. D_ACCESS_ASSIGNMENT (0x19) o D_BCH (0x27)
+    elif opcode in (0x19, 0x27) and len(raw) >= 4:
+        ch_id = ((raw[2] & 0x0F) << 8) | raw[3]
+        if 800 <= ch_id <= 1600:
+            f = 380000000 + ch_id * 12500
+            channels.append((ch_id, f))
+
     return list(set(channels))
 
 def auto_scan_bch_frequencies(control_freq=393.525e6, gain=0.0, bias_tee=False, scan_seconds=6):
@@ -258,20 +390,33 @@ def play_audio(wav_path):
         pass
 
 def show_interactive_menu():
+    discovered_dict = load_discovered_frequencies("frecuencias.csv")
+    clusters = cluster_frequencies(discovered_dict, max_span=1800000)
+
     print(f"\n{C_BOLD}{C_CYAN}============================================================{C_RESET}")
     print(f"{C_BOLD}{C_CYAN}          TETRAPOL KIT - PANEL DE CONTROL EN VIVO           {C_RESET}")
     print(f"{C_BOLD}{C_CYAN}============================================================{C_RESET}")
+    print(f" {C_BOLD}Canales Predeterminados:{C_RESET}")
     for ch in DEFAULT_CHANNELS:
         print(f"  {C_BOLD}[{ch['id']}]{C_RESET} {C_GREEN}{ch['label']}{C_RESET}  {C_DIM}({ch['desc']}){C_RESET}")
-    print(f"\n  {C_BOLD}[T]{C_RESET} {C_YELLOW}TODOS los 5 canales a la vez{C_RESET} {C_DIM}(Trunking simultáneo - Span: 1.14 MHz){C_RESET}")
-    print(f"  {C_BOLD}[AA]{C_RESET} {C_MAGENTA}TODOS + Auto-descubrimiento en caliente y sintonización dinámica{C_RESET} {C_DIM}(Recomendado){C_RESET}")
-    print(f"  {C_BOLD}[A]{C_RESET} {C_MAGENTA}Auto-descubrimiento previo{C_RESET} {C_DIM}(Escanear celda CCH){C_RESET}")
+    print(f"\n  {C_BOLD}[T]{C_RESET} {C_YELLOW}TODOS los 5 canales base{C_RESET} {C_DIM}(Trunking simultáneo - Span: 1.14 MHz){C_RESET}")
+    print(f"  {C_BOLD}[AA]{C_RESET} {C_MAGENTA}TODOS + Auto-sintonización dinámica en caliente{C_RESET} {C_DIM}(Recomendado){C_RESET}")
+    
+    if clusters:
+        print(f"\n {C_BOLD}Grupos de Frecuencia Descubiertos (Clusters SDR 1.8 MHz):{C_RESET}")
+        for idx, cl in enumerate(clusters):
+            min_f = min(cl)
+            max_f = max(cl)
+            center = (min_f + max_f) / 2
+            print(f"  {C_BOLD}[G{idx+1}]{C_RESET} {C_CYAN}Grupo #{idx+1}:{C_RESET} {min_f/1e6:.4f} - {max_f/1e6:.4f} MHz {C_YELLOW}({len(cl)} canales){C_RESET} {C_DIM}[Centro: {center/1e6:.4f} MHz]{C_RESET}")
+
+    print(f"\n  {C_BOLD}[A]{C_RESET} {C_MAGENTA}Auto-descubrimiento previo{C_RESET} {C_DIM}(Escanear celda CCH){C_RESET}")
     print(f"  {C_BOLD}[M]{C_RESET} {C_BLUE}Introducir frecuencia manual personalizada{C_RESET}")
     print(f"{C_CYAN}------------------------------------------------------------{C_RESET}")
 
     # 1. Selección de frecuencias
     try:
-        choice = input(f"{C_BOLD}1. Canales a sintonizar (ej: 1,3,4 o T o AA) [Por defecto: AA]: {C_RESET}").strip()
+        choice = input(f"{C_BOLD}1. Canales o Grupo a sintonizar (ej: AA, T, G1..G{len(clusters) if clusters else 1}, o 1,3,4) [Por defecto: AA]: {C_RESET}").strip()
     except (KeyboardInterrupt, EOFError):
         print("\nSaliendo...")
         sys.exit(0)
@@ -285,6 +430,20 @@ def show_interactive_menu():
     elif choice.upper() == "T" or choice.upper() == "TODOS":
         selected_freqs = [ch["freq"] for ch in DEFAULT_CHANNELS]
         auto_dynamic = False
+    elif choice.upper().startswith("G") and choice[1:].isdigit():
+        g_idx = int(choice[1:]) - 1
+        if 0 <= g_idx < len(clusters):
+            cl = clusters[g_idx]
+            # Seleccionar canales del cluster (hasta 6 para no sobrecargar si hay muchos)
+            if len(cl) > 6:
+                step = max(1, len(cl) // 6)
+                selected_freqs = [cl[i] for i in range(0, len(cl), step)][:6]
+            else:
+                selected_freqs = cl
+            auto_dynamic = True
+            print(f"  {C_GREEN}✓ Seleccionado Grupo #{g_idx+1} ({len(selected_freqs)} canales sintonizados en paralelo){C_RESET}")
+        else:
+            selected_freqs = [ch["freq"] for ch in DEFAULT_CHANNELS]
     elif is_auto_scan_once:
         selected_freqs = None
     elif choice.upper() == "M":
@@ -404,13 +563,16 @@ class MultiChannelMonitor:
         self.enable_web = enable_web
         self.aliases = load_talkgroup_aliases(aliases_file)
         self.gps_log_file = os.path.join(self.out_dir, "gps_positions.log")
-        self.new_freqs_file = "nuevas_frecuencias.txt"
-        self.known_channels = set(self.freqs)
+        self.new_freqs_file = "frecuencias.csv"
+        
+        self.discovered_freqs_dict = load_discovered_frequencies(self.new_freqs_file)
+        self.known_channels = set(self.freqs).union(self.discovered_freqs_dict.keys())
         
         # Estructuras de datos para el Dashboard Web y Mapa
         self.gps_emitters = {}
         self.recent_calls = []
         self.recent_events = []
+        self.recent_bursts_history = []
         self.web_server = None
         os.makedirs(self.out_dir, exist_ok=True)
 
@@ -502,7 +664,7 @@ class MultiChannelMonitor:
         print(f" {C_BOLD}Frecuencia central SDR:{C_RESET} {self.center_freq/1e6:.4f} MHz | Span: {self.span/1e3:.1f} kHz")
         print(f" {C_BOLD}Ganancia SDR:{C_RESET} {gain_str} | Bias-Tee: {'ACTIVADO (4.5V)' if self.bias_tee else 'DESACTIVADO'}")
         print(f" {C_BOLD}Auto-descubrimiento dinámico [AA]:{C_RESET} {C_GREEN + 'ACTIVADO' if self.auto_dynamic else C_DIM + 'DESACTIVADO'}{C_RESET}")
-        print(f" {C_BOLD}Detección GPS / AVL:{C_RESET} {C_GREEN}ACTIVA (Latitud / Longitud){C_RESET}")
+        print(f" {C_BOLD}Detección GPS / AVL:{C_RESET} {C_GREEN}ACTIVA (Filtro regional España/Europa){C_RESET}")
         print(f" {C_BOLD}Detección OTAR / Seguridad:{C_RESET} {C_GREEN}ACTIVA{C_RESET}")
         print(f" {C_BOLD}Mapa de flotas (Talkgroups):{C_RESET} {len(self.aliases)} alias cargados")
         print(f" {C_BOLD}Filtro de voz mínima:{C_RESET} >= {self.min_duration:.2f}s ({self.min_frames} tramas)")
@@ -710,16 +872,20 @@ class MultiChannelMonitor:
                     alias = self.aliases.get(addr_key, "")
                     alias_str = f" ({C_BOLD}{alias}{C_RESET})" if alias else ""
 
-                    # 1. Detección de Frecuencias
+                    # 1. Detección y Auto-Descubrimiento de Frecuencias de Canal
                     found_channels = extract_tetrapol_channels(data_val)
                     for ch_id, ch_freq in found_channels:
                         if ch_freq not in self.known_channels:
                             self.known_channels.add(ch_freq)
-                            try:
-                                with open(self.new_freqs_file, "a") as ff:
-                                    ff.write(f"[{datetime.now().isoformat()}] Frecuencia: {ch_freq/1e6:.4f} MHz ({ch_freq} Hz) | Canal ID: {ch_id} | Detectada en: {freq/1e6:.4f} MHz | Celda SCR: {st['scrambler']}\n")
-                            except Exception:
-                                pass
+                            with self.lock:
+                                self.discovered_freqs_dict[ch_freq] = {
+                                    "mhz": ch_freq / 1e6,
+                                    "ch_id": ch_id,
+                                    "scr": st['scrambler'] or "70",
+                                    "count": 1,
+                                    "last_seen": datetime.now().isoformat()
+                                }
+                                save_clustered_frequencies(self.discovered_freqs_dict, self.new_freqs_file)
 
                             in_span = abs(ch_freq - self.center_freq) <= (self.sample_rate / 2.0 - 50000)
                             if in_span:
