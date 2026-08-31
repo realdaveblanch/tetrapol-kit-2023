@@ -42,6 +42,19 @@ GAIN_PRESETS = [
     {"id": "7", "val": None, "label": "AGC", "desc": "Automática por hardware"},
 ]
 
+def load_talkgroup_aliases(json_path="talkgroups.json"):
+    aliases = {}
+    if os.path.exists(json_path):
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    if not k.startswith("_"):
+                        aliases[k] = str(v)
+        except Exception:
+            pass
+    return aliases
+
 def classify_voice_burst(raw_bytes_list):
     """
     Clasificador estadístico multicriterio para distinguir:
@@ -208,7 +221,7 @@ def show_interactive_menu():
     return selected_freqs, selected_gain, bias_tee, save_encrypted, verbosity
 
 class MultiChannelMonitor:
-    def __init__(self, freqs, gain=0.0, bias_tee=False, sample_rate=2048000, key_hex=None, auto_play=True, out_dir="demod/tmp/live", min_duration=0.30, verbosity=0, save_encrypted=False):
+    def __init__(self, freqs, gain=0.0, bias_tee=False, sample_rate=2048000, key_hex=None, auto_play=True, out_dir="demod/tmp/live", min_duration=0.30, verbosity=0, save_encrypted=False, aliases_file="talkgroups.json"):
         self.freqs = sorted(list(set(int(f) for f in freqs)))
         self.gain = gain
         self.bias_tee = bias_tee
@@ -217,9 +230,10 @@ class MultiChannelMonitor:
         self.auto_play = auto_play
         self.out_dir = out_dir
         self.min_duration = min_duration
-        self.min_frames = max(15, int(self.min_duration / 0.02))  # Mínimo 15 tramas (0.30s)
+        self.min_frames = max(15, int(self.min_duration / 0.02))
         self.verbosity = verbosity
         self.save_encrypted = save_encrypted
+        self.aliases = load_talkgroup_aliases(aliases_file)
         os.makedirs(self.out_dir, exist_ok=True)
 
         min_f = min(self.freqs)
@@ -257,6 +271,8 @@ class MultiChannelMonitor:
                 "total_data_frames": 0,
                 "proc_dump": None,
                 "in_hang": False,
+                "active_group": None,       # Tupla (z, y, x, alias, timestamp)
+                "burst_active_group": None, # Grupo fijado para la llamada actual
             }
 
         self.proc_demod = None
@@ -272,6 +288,7 @@ class MultiChannelMonitor:
             print(f"   • {st['color']}Canal #{st['idx']}: {f/1e6:.4f} MHz ({f} Hz){C_RESET}")
         print(f" {C_BOLD}Frecuencia central SDR:{C_RESET} {self.center_freq/1e6:.4f} MHz | Span: {self.span/1e3:.1f} kHz")
         print(f" {C_BOLD}Ganancia SDR:{C_RESET} {gain_str} | Bias-Tee: {'ACTIVADO (4.5V)' if self.bias_tee else 'DESACTIVADO'}")
+        print(f" {C_BOLD}Mapa de flotas (Talkgroups):{C_RESET} {len(self.aliases)} alias cargados")
         print(f" {C_BOLD}Filtro de voz mínima:{C_RESET} >= {self.min_duration:.2f}s ({self.min_frames} tramas)")
         print(f" {C_BOLD}Guardar audios cifrados:{C_RESET} {'SÍ' if self.save_encrypted else 'NO (Solo guardar voz en claro)'}")
         verb_str = "1 (Informativo: Grupos y Señalización)" if self.verbosity==1 else ("2 (Debug crudo)" if self.verbosity>=2 else "0 (Limpio: Solo voz)")
@@ -371,6 +388,12 @@ class MultiChannelMonitor:
 
                         if not st["voice_burst"]:
                             st["voice_burst_start"] = now_t
+                            # Fijar el grupo activo reciente para esta llamada
+                            grp = st.get("active_group")
+                            if grp and (now_t - grp["time"] < 120): # visto en los ultimos 2 min
+                                st["burst_active_group"] = grp
+                            else:
+                                st["burst_active_group"] = None
 
                         st["voice_burst"].append(line)
                         frames_cnt = len(st["voice_burst"])
@@ -380,7 +403,11 @@ class MultiChannelMonitor:
                             if frames_cnt == self.min_frames:
                                 st["total_calls"] += 1
                                 t_str = datetime.now().strftime("%H:%M:%S")
-                                print(f"\n{C_BOLD}{C_GREEN}🔴 [{t_str}] {tag} ¡TRANSMISIÓN DE VOZ EN CURSO! (Llamada #{st['total_calls']}){C_RESET}")
+                                grp_info = ""
+                                if st.get("burst_active_group"):
+                                    bg = st["burst_active_group"]
+                                    grp_info = f" {C_YELLOW}[Grupo: {bg['key']}" + (f" ({bg['alias']})" if bg['alias'] else "") + f"]{C_RESET}"
+                                print(f"\n{C_BOLD}{C_GREEN}🔴 [{t_str}] {tag} ¡TRANSMISIÓN DE VOZ EN CURSO! (Llamada #{st['total_calls']}){grp_info}{C_RESET}")
 
                             sys.stdout.write(f"\r   {tag} {C_RED}▶ Hablando... {duration:.1f}s ({frames_cnt} tramas){C_RESET}   ")
                             sys.stdout.flush()
@@ -389,23 +416,37 @@ class MultiChannelMonitor:
                     with self.lock:
                         st["total_data_frames"] += 1
 
-            elif ev_type == "tsdu" and self.verbosity >= 1:
+            elif ev_type == "tsdu":
                 tsdu = event.get("tsdu", {})
                 data_val = (tsdu.get("data") or {}).get("value", "")
                 if data_val and data_val != "5812":
                     now = datetime.now().strftime("%H:%M:%S")
                     ch = tsdu.get("log_ch")
                     addr = tsdu.get("addr", {})
-                    addr_key = f"Z:{addr.get('z')} Y:{addr.get('y')} X:{addr.get('x')}"
-                    
+                    z = addr.get("z", 0)
+                    y = addr.get("y", 7)
+                    x = addr.get("x", 4095)
+                    addr_key = f"{z}:{y}:{x}"
+                    alias = self.aliases.get(addr_key, "")
+
                     if data_val == "5889":
                         if not st.get("in_hang"):
                             st["in_hang"] = True
-                            print(f"\n[{now}] {tag} {C_YELLOW}⏸️ Canal en espera de respuesta (Hang Time 30s){C_RESET}")
+                            if self.verbosity >= 1:
+                                print(f"\n[{now}] {tag} {C_YELLOW}⏸️ Canal en espera de respuesta (Hang Time 30s){C_RESET}")
                     else:
                         st["in_hang"] = False
-                        if addr.get("x") != 4095:
-                            print(f"\n[{now}] {tag} {C_MAGENTA}📢 Flota/Grupo activo: {addr_key} | Canal lógico: {ch}{C_RESET}")
+                        if x != 4095:
+                            # Actualizar grupo activo del canal
+                            st["active_group"] = {
+                                "z": z, "y": y, "x": x,
+                                "key": addr_key,
+                                "alias": alias,
+                                "time": time.time()
+                            }
+                            if self.verbosity >= 1:
+                                alias_str = f" ({C_BOLD}{alias}{C_RESET}{C_MAGENTA})" if alias else ""
+                                print(f"\n[{now}] {tag} {C_MAGENTA}📢 Flota/Grupo activo: Z:{z} Y:{y} X:{x}{alias_str} | Canal lógico: {ch}{C_RESET}")
 
     def _burst_supervisor(self):
         while self.running:
@@ -416,13 +457,15 @@ class MultiChannelMonitor:
                     with self.lock:
                         burst = list(st["voice_burst"])
                         st["voice_burst"] = []
+                        burst_grp = st.get("burst_active_group")
+                        st["burst_active_group"] = None
                     
                     if len(burst) >= self.min_frames:
-                        self._finish_voice_burst(f, burst)
+                        self._finish_voice_burst(f, burst, burst_grp)
                     elif self.verbosity >= 2:
                         print(f"\n{C_DIM}[Descartado glitch de {len(burst)} tramas ({len(burst)*0.02:.3f}s) en {f/1e6:.4f}MHz]{C_RESET}")
 
-    def _finish_voice_burst(self, freq, burst_lines):
+    def _finish_voice_burst(self, freq, burst_lines, burst_group=None):
         st = self.channel_states[freq]
         tag = f"{st['color']}[CH#{st['idx']} {freq/1e6:.4f}MHz]{C_RESET}"
         duration = len(burst_lines) * 0.02
@@ -454,20 +497,26 @@ class MultiChannelMonitor:
             is_encrypted = False
             is_clear = False
 
-        print(f"\n[{time_display}] {tag} {C_BOLD}⏹️ Fin llamada #{st['total_calls']}:{C_RESET} {len(burst_lines)} tramas ({duration:.2f}s) | Entropía: {ent:.3f} {status_tag}")
+        grp_str = ""
+        tg_tag = ""
+        if burst_group:
+            grp_str = f" | {C_YELLOW}Grupo: {burst_group['key']}" + (f" ({burst_group['alias']})" if burst_group['alias'] else "") + f"{C_RESET}"
+            tg_tag = f"_TG_{burst_group['z']}_{burst_group['y']}_{burst_group['x']}"
+
+        print(f"\n[{time_display}] {tag} {C_BOLD}⏹️ Fin llamada #{st['total_calls']}:{C_RESET} {len(burst_lines)} tramas ({duration:.2f}s) | Entropía: {ent:.3f}{grp_str} {status_tag}")
 
         if not is_clear and not self.save_encrypted and not self.key_hex:
             if is_encrypted:
                 print(f"    ℹ️ {tag} {C_DIM}Audio cifrado descartado (no se guarda archivo WAV).{C_RESET}")
             return
 
-        json_tmp = os.path.join(self.out_dir, f"call_{freq}_{now_str}.json")
+        json_tmp = os.path.join(self.out_dir, f"call_{freq}{tg_tag}_{now_str}.json")
         with open(json_tmp, "w") as f:
             for l in burst_lines:
                 f.write(l + "\n")
 
         wav_suffix = "ENCRYPTED" if is_encrypted else ("CLEARTEXT" if is_clear else "NOISE")
-        wav_file = os.path.join(self.out_dir, f"call_{freq}_{now_str}_{wav_suffix}.wav")
+        wav_file = os.path.join(self.out_dir, f"call_{freq}{tg_tag}_{now_str}_{wav_suffix}.wav")
         vocoder_bin = os.path.abspath("./build/apps/tetrapol_vocoder")
 
         cmd = [vocoder_bin, "-i", json_tmp, "-o", wav_file]
@@ -476,7 +525,7 @@ class MultiChannelMonitor:
 
         try:
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            print(f"    📁 {tag} Grabación: {C_CYAN}{wav_file}{C_RESET}")
+            print(f"    📁 {tag} Grabación etiquetada: {C_CYAN}{wav_file}{C_RESET}")
 
             if is_clear and self.auto_play:
                 print(f"    🔊 {tag} {C_GREEN}¡Voz en claro confirmada! Reproduciendo en directo...{C_RESET}")
@@ -505,7 +554,8 @@ class MultiChannelMonitor:
         print(f"{C_BOLD}             RESUMEN MULTICANAL DE LA SESIÓN{C_RESET}")
         print(f"{C_CYAN}============================================================{C_RESET}")
         for f, st in self.channel_states.items():
-            print(f" {st['color']}• Canal {f/1e6:.4f} MHz:{C_RESET} {st['total_calls']} llamadas reales | {st['total_voice_frames']} tramas voz | {st['total_data_frames']} tramas datos")
+            grp_name = f" | Último grupo: {st['active_group']['key']}" if st.get("active_group") else ""
+            print(f" {st['color']}• Canal {f/1e6:.4f} MHz:{C_RESET} {st['total_calls']} llamadas reales | {st['total_voice_frames']} tramas voz | {st['total_data_frames']} tramas datos{grp_name}")
         print(f" • Directorio de audios: {self.out_dir}")
         print(f"{C_CYAN}============================================================{C_RESET}\n")
 
@@ -533,6 +583,7 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Nivel de detalle (-v informativo, -vv debug completo)")
     parser.add_argument("--no-play", action="store_true", help="Desactivar auto-reproducción de voz en claro")
     parser.add_argument("-o", "--out-dir", type=str, default="demod/tmp/live", help="Directorio de grabaciones")
+    parser.add_argument("-a", "--aliases", type=str, default="talkgroups.json", help="Archivo JSON con mapa de alias de Talkgroups")
     args = parser.parse_args()
 
     save_enc = args.save_encrypted
@@ -555,6 +606,7 @@ if __name__ == "__main__":
         out_dir=args.out_dir,
         min_duration=args.min_duration,
         verbosity=verb,
-        save_encrypted=save_enc
+        save_encrypted=save_enc,
+        aliases_file=args.aliases
     )
     monitor.start()

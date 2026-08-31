@@ -1,0 +1,9 @@
+{
+  "_comentario": "Asignación de nombres amigables a IDs de grupos (Z:Y:X) y terminales TETRAPOL",
+  "0:7:4095": "Broadcast General (Red)",
+  "0:7:122": "Grupo de Trabajo 122",
+  "0:7:123": "Grupo de Trabajo 123",
+  "0:7:124": "Grupo Operativo 124",
+  "0:3:150": "Terminal Móvil 150",
+  "0:3:100": "Central de Mando / Despacho"
+}

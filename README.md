@@ -15,6 +15,7 @@ Suite completa de análisis, demodulación, monitorización multicanal y decodif
 - 🔊 **Vocoder RPCELP Integrado:** Síntesis y decodificación acústica completa de tramas de voz digital de $6.0\text{ kbit/s}$ directamente a formato de audio estándar **WAV (16-bit PCM Mono @ 8000 Hz)**.
 - ⚡ **Monitor en Vivo Inteligente (`./live.sh`):** Detección en tiempo real de llamadas de voz, eventos de señalización, balizas y grupos de conversación (*Talkgroups*).
 - 🛡️ **Clasificador Criptográfico Estadístico:** Discriminación matemática en tiempo real mediante **Entropía de Shannon Normalizada**, **Distancia de Hamming inter-trama** y **Balance de Bernoulli** para distinguir transmisiones cifradas por flujo (*Stream Cipher*), voz en claro y ruido radioeléctrico.
+- 🏷️ **Seguimiento Dinámico de Trunking y Mapa de Flotas (`talkgroups.json`):** Asociación automática en tiempo real de cada llamada con su **Talkgroup (Z:Y:X)** y nombre de flota personalizado, etiquetando los archivos WAV y la consola.
 - 🎧 **Reproducción de Audio en Directo:** Escucha inmediata de llamadas en claro a través de los altavoces mediante PulseAudio / ALSA.
 - 🔌 **Control de Hardware Avanzado:** Soporte interactivo para **Bias-Tee (4.5V DC)** para LNAs activos y escalonamiento de ganancia RF.
 - 📘 **[Manual Técnico y Científico Completo](MANUAL_TECNICO_TETRAPOL.md):** Más de 7 capítulos que detallan la física de radio, arquitectura PAS 0001, matemáticas del vocoder y un glosario pedagógico completo.
@@ -35,8 +36,8 @@ sudo apt install -y build-essential cmake pkg-config git \
                     gnuradio gr-osmosdr rtl-sdr pulseaudio-utils
 
 # Clonar y compilar el proyecto
-git clone https://github.com/tu-usuario/tetrapol-kit.git
-cd tetrapol-kit
+git clone https://github.com/realdaveblanch/tetrapol-kit-2023.git
+cd tetrapol-kit-2023
 cmake -B build -S .
 cmake --build build
 ```

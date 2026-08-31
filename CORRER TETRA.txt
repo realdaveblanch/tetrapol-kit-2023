@@ -1,0 +1,3 @@
+usbipd attach --wsl --busid 2-3
+
+EN CMD COMO ADMIN
