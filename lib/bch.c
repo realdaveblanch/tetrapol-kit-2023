@@ -34,8 +34,8 @@ bch_t *bch_create(tpol_t *tpol)
 
     bch->tpdu = tpdu_ui_create(tpol, FRAME_TYPE_DATA, LOG_CH_BCH);
     if (!bch->tpdu) {
-        free(bch);
         data_frame_destroy(bch->data_fr);
+        free(bch);
         return NULL;
     }
 

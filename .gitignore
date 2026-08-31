@@ -17,3 +17,8 @@ lib/test_phys_ch
 lib/test_timer
 Makefile
 Testing/
+apps/tetrapol_vocoder
+demod/tmp/
+__pycache__/
+*.fifo
+

@@ -1,4 +1,4 @@
-cmake_minimum_required (VERSION 2.6)
+cmake_minimum_required (VERSION 3.10)
 project (TETRAPOL_kit)
 
 include (CheckCCompilerFlag)
@@ -17,7 +17,7 @@ else (COMPILER_HAVE_C11)
     endif (COMPILER_HAVE_C1X)
 endif (COMPILER_HAVE_C11)
 
-set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_XOPEN_SOURCE")
+set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_DEFAULT_SOURCE -D_GNU_SOURCE")
 
 CHECK_C_COMPILER_FLAG ("-Og" COMPILER_HAS_OG)
 if (COMPILER_HAS_OG)

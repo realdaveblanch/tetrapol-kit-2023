@@ -45,9 +45,9 @@ static void test_check_fcs(void **state)
 
 int main(void)
 {
-    const UnitTest tests[] = {
-        unit_test(test_check_fcs),
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_check_fcs),
     };
 
-    return run_tests(tests);
+    return cmocka_run_group_tests(tests, NULL, NULL);
 }

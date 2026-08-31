@@ -65,9 +65,9 @@ static void test_t1(void **state)
 
 int main(void)
 {
-    const UnitTest tests[] = {
-        unit_test(test_t1),
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_t1),
     };
 
-    return run_tests(tests);
+    return cmocka_run_group_tests(tests, NULL, NULL);
 }

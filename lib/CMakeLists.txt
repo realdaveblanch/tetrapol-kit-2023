@@ -1,5 +1,3 @@
-cmake_minimum_required(VERSION 2.6)
-
 find_library(CMOCKA_LIBRARY NAMES cmocka)
 if (NOT CMOCKA_LIBRARY)
     message(FATAL_ERROR "libcmocka unit test framework mising")
@@ -37,6 +35,7 @@ add_library (tetrapol
     tsdu.c
     tsdu_json.c
     tsdu_print.c
+    rpcelp.c
     tetrapol/addr.h
     tetrapol/bch.h
     tetrapol/bit_utils.h
@@ -62,6 +61,7 @@ add_library (tetrapol
     tetrapol/tpdu.h
     tetrapol/tsdu_json.h
     tetrapol/tsdu_print.h
+    tetrapol/rpcelp.h
 )
 target_link_libraries (tetrapol ${GLIB2_LIBRARIES})
 include_directories(${GLIB2_INCLUDE_DIRS})

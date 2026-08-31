@@ -280,16 +280,16 @@ static void test_frame_encode2(void **state)
 
 int main(void)
 {
-    const UnitTest tests[] = {
-        unit_test(test_frame_diff_dec),
-        unit_test(test_frame_deinterleave),
-        unit_test(test_frame_decoder_data_01),
-        unit_test(test_frame_decoder_data_02),
-        unit_test(test_frame_decoder_voice_01),
-        unit_test(test_mk_crc5),
-        unit_test(test_frame_encode1),
-        unit_test(test_frame_encode2),
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_frame_diff_dec),
+        cmocka_unit_test(test_frame_deinterleave),
+        cmocka_unit_test(test_frame_decoder_data_01),
+        cmocka_unit_test(test_frame_decoder_data_02),
+        cmocka_unit_test(test_frame_decoder_voice_01),
+        cmocka_unit_test(test_mk_crc5),
+        cmocka_unit_test(test_frame_encode1),
+        cmocka_unit_test(test_frame_encode2),
     };
 
-    return run_tests(tests);
+    return cmocka_run_group_tests(tests, NULL, NULL);
 }

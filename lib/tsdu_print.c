@@ -981,7 +981,7 @@ static void d_reject_print(const tsdu_d_reject_t *tsdu)
 
         case 0x11:
         case 0x40:
-            cause_txt = " (call timeout after 30 sec ???)";
+            cause_txt = " (call timeout after 30 sec ?\?\?)";
             break;
 
         case 0x41:

@@ -40,9 +40,9 @@ static void test_pack_bits(void **state)
 
 int main(void)
 {
-    const UnitTest tests[] = {
-        unit_test(test_pack_bits),
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_pack_bits),
     };
 
-    return run_tests(tests);
+    return cmocka_run_group_tests(tests, NULL, NULL);
 }

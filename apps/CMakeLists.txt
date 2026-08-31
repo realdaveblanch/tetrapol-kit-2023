@@ -8,3 +8,8 @@ target_link_libraries (tetrapol_dump tetrapol)
 
 add_executable (tetrapol_build tetrapol_build.c)
 target_link_libraries (tetrapol_build tetrapol ${JSON_C_LIBRARIES} )
+
+add_executable (tetrapol_vocoder tetrapol_vocoder.c)
+target_link_libraries (tetrapol_vocoder tetrapol -lm)
+
+install (TARGETS tetrapol_dump tetrapol_build tetrapol_vocoder DESTINATION bin)
